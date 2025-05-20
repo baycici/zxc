@@ -1,110 +1,96 @@
-module mac_row (
-    clk, reset, execute, load, a_select,
-    nzero_weights_flat, w_indexes_flat,
-    in_activation_flat, in_psum_flat, act_index_flat,
-    final_psum_flat, load_out
+module mac_tile_wrapper (
+    clk,
+    reset,
+    execute,
+    a_select,
+    in_activation_flat,
+    in_weight_flat,
+    a_index_flat,
+    w_index_flat,
+    out_psum,
+    w_index_out
 );
 
-    parameter nz = 8;
     parameter bw = 4;
-    parameter psum_bw = 20;
-    parameter ncol = 2;
-    parameter col = 4;
+    parameter psum_bw = 16;
+    parameter depth = 4;
 
-    input clk, reset, execute, load, a_select;
+    input clk;
+    input reset;
+    input execute;
+    input a_select;
 
-    input [nz*bw-1:0] nzero_weights_flat;   // Flattened: [nz][bw]
-    input [nz*2-1:0] w_indexes_flat;        // Flattened: [nz][2]
-    input [2*bw-1:0] in_activation_flat;    // Flattened: [2][bw]
-    input [col*psum_bw-1:0] in_psum_flat;   // Flattened: [col][psum_bw]
-    input [2*2-1:0] act_index_flat;         // Flattened: [2][2]
+    // Flattened inputs (since classic Verilog does not support unpacked ports)
+    input [2*bw-1:0] in_activation_flat;   // 2 activations * bw bits each
+    input [depth*bw-1:0] in_weight_flat;   // depth weights * bw bits each
+    input [2*2-1:0] a_index_flat;           // 2 activations * 2 bits each
+    input [depth*2-1:0] w_index_flat;       // depth weights * 2 bits each
 
-    output [col*psum_bw-1:0] final_psum_flat;
-    output load_out;
+    output reg [psum_bw-1:0] out_psum;
+    output [1:0] w_index_out;
 
-    reg [psum_bw-1:0] int_psum [0:col-1];
-    reg [psum_bw-1:0] final_psum [0:col-1];
-    reg [psum_bw-1:0] temp_psum [0:col-1];
+    // Internal registers/wires to hold unpacked data
+    reg [bw-1:0] in_activation [0:1];
+    reg [bw-1:0] in_weight [0:depth-1];
+    reg [1:0] a_index [0:1];
+    reg [1:0] w_index [0:depth-1];
 
-    wire [psum_bw-1:0] in_psum [0:col-1];
+    reg [bw-1:0] act_select, act_select_q;
+    reg [1:0] act_select_index, act_select_index_q;
+    reg [bw-1:0] select_w, select_w_q;
+    reg [1:0] select_w_index, select_w_index_q;
 
-    reg [psum_bw-1:0] out_psum [0:ncol-1];
-    wire [1:0] w_index_out [0:ncol-1];
-
-    reg load_q, execute_q;
-    assign load_out = load_q;
+    wire [psum_bw-1:0] product;
 
     integer i;
-    // Unpack in_psum and pack final_psum_flat
-    generate
-        genvar idx;
-        for (idx = 0; idx < col; idx = idx + 1) begin : UNPACK_PSUM
-            assign in_psum[idx] = in_psum_flat[psum_bw*idx +: psum_bw];
-            assign final_psum_flat[psum_bw*idx +: psum_bw] = final_psum[idx];
-        end
-    endgenerate
 
-    // Update temp_psum
+    // Unpack flattened inputs to arrays
     always @(*) begin
-        for (i = 0; i < col; i = i + 1)
-            temp_psum[i] = int_psum[i];
-
-        for (i = 0; i < ncol; i = i + 1) begin
-            temp_psum[w_index_out[i]] = temp_psum[w_index_out[i]] + out_psum[i];
+        for (i = 0; i < 2; i = i + 1) begin
+            in_activation[i] = in_activation_flat[bw*i +: bw];
+            a_index[i] = a_index_flat[2*i +: 2];
+        end
+        for (i = 0; i < depth; i = i + 1) begin
+            in_weight[i] = in_weight_flat[bw*i +: bw];
+            w_index[i] = w_index_flat[2*i +: 2];
         end
     end
 
-    // Sequential block
+    // Select activation and weight according to a_select and index
+    always @(*) begin
+        if (a_select) begin
+            act_select = in_activation[1];
+            act_select_index = a_index[1];
+        end else begin
+            act_select = in_activation[0];
+            act_select_index = a_index[0];
+        end
+
+        select_w = in_weight[act_select_index];
+        select_w_index = w_index[act_select_index];
+    end
+
+    // Multiply act_select_q * select_w_q (Verilog supports *)
+    assign product = act_select_q * select_w_q;
+    assign w_index_out = select_w_index_q;
+
     always @(posedge clk) begin
-        execute_q <= execute;
-        load_q <= load;
-
         if (reset) begin
-            for (i = 0; i < col; i = i + 1) begin
-                int_psum[i] <= 0;
-                final_psum[i] <= 0;
-            end
-        end else if (execute_q) begin
-            if (load_q) begin
-                for (i = 0; i < col; i = i + 1)
-                    int_psum[i] <= in_psum[i];
-            end else begin
-                for (i = 0; i < col; i = i + 1)
-                    int_psum[i] <= temp_psum[i];
+            out_psum <= 0;
+            act_select_q <= 0;
+            act_select_index_q <= 0;
+            select_w_q <= 0;
+            select_w_index_q <= 0;
+        end else begin
+            act_select_q <= act_select;
+            act_select_index_q <= act_select_index;
+            select_w_q <= select_w;
+            select_w_index_q <= select_w_index;
+
+            if (execute) begin
+                out_psum <= product;
             end
         end
     end
-
-    // Generate mac_tile_wrapper instances
-    generate
-        genvar tile;
-        for (tile = 0; tile < ncol; tile = tile + 1) begin : col_num
-            localparam integer slice_start = tile * col;
-
-            wire [bw*col-1:0] in_weight_slice;
-            wire [2*col-1:0] w_index_slice;
-
-            // Extract slices for this tile from flattened inputs
-            assign in_weight_slice = nzero_weights_flat[(slice_start*bw) +: (col*bw)];
-            assign w_index_slice = w_indexes_flat[(slice_start*2) +: (col*2)];
-
-            mac_tile_wrapper #(
-                .bw(bw),
-                .psum_bw(psum_bw),
-                .depth(col)
-            ) mac_tile_instance (
-                .clk(clk),
-                .reset(reset),
-                .execute(execute_q),
-                .a_select(a_select),
-                .in_activation_flat(in_activation_flat), // flattened 2 activations * bw
-                .in_weight_flat(in_weight_slice),         // flattened col weights * bw
-                .a_index_flat(act_index_flat),            // flattened 2 activations * 2 bits
-                .w_index_flat(w_index_slice),             // flattened col indices * 2 bits
-                .out_psum(out_psum[tile]),
-                .w_index_out(w_index_out[tile])
-            );
-        end
-    endgenerate
 
 endmodule
