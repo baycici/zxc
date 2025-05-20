@@ -1,80 +1,57 @@
-module DP1M4_row (
-    clk, 
-    reset,
-    weights_flat,          // [nnz*bw-1:0]
-    weight_mask,           // [total-1:0]
-    activation_flat,       // [2*bw-1:0]
-    activation_index_flat, // [3:0]
-    load,
-    execute,
-    psum_in_flat,          // [col*psum_bw-1:0]
-    a_select,
-    load_out,
-    psum_out_flat          // [col*psum_bw-1:0]
+module DP1M4_row #(
+  // keep the same parameters as DP1M4...
+  parameter bw       = 4,
+  parameter psum_bw  = 20,
+  parameter nnz      = 2,
+  parameter n        = 4,
+  // number of DP1M4 lanes in the row
+  parameter M        = 4
+) (
+  // shared control + activation
+  input  wire                   clk,
+  input  wire                   reset,
+  input  wire                   load,
+  input  wire                   execute,
+  input  wire [2*bw-1:0]        activation_flat,
+
+  // per-lane control + data (packed into wide vectors)
+  input  wire [M-1:0]           a_select,                   // one bit per lane
+  input  wire [M*nnz*bw-1:0]    weights_flat,               // concatenated NNZ×BW per lane
+  input  wire [M*n-1:0]         w_index,                    // concatenated n-bit one-hot per lane
+  input  wire [M*4-1:0]         activation_index_flat,      // concatenated 4-bit per lane
+  input  wire [M*psum_bw-1:0]   psum_in,                    // concatenated PSUM_BW per lane
+
+  // outputs per lane
+  output wire [M*psum_bw-1:0]   psum_out                    // concatenated PSUM_BW per lane
 );
 
-    parameter col = 4;
-    parameter bw = 4;
-    parameter psum_bw = 20;
-    parameter nnz = 8;
-    parameter ncol = 2;
-    parameter total = 16;
+  genvar i;
+  generate
+    for (i = 0; i < M; i = i + 1) begin : GEN_DP
+      DP1M4 #(
+        .bw      (bw),
+        .psum_bw (psum_bw),
+        .nnz     (nnz),
+        .n       (n)
+      ) dp_inst (
+        // shared
+        .clk                   (clk),
+        .reset                 (reset),
+        .load                  (load),
+        .execute               (execute),
+        .activation_flat       (activation_flat),
 
-    input clk, reset, load, execute, a_select;
-    input [nnz*bw-1:0] weights_flat;
-    input [total-1:0] weight_mask;
-    input [2*bw-1:0] activation_flat;
-    input [3:0] activation_index_flat;
-    input [col*psum_bw-1:0] psum_in_flat;
+        // per-lane slices
+        .a_select              (a_select[i]),
+        .weights_flat          (weights_flat[(i+1)*nnz*bw-1 -: nnz*bw]),
+        .w_index               (w_index[(i+1)*n-1      -: n]),
+        .activation_index_flat (activation_index_flat[(i+1)*4-1  -: 4]),
+        .psum_in               (psum_in[(i+1)*psum_bw-1 -: psum_bw]),
 
-    output load_out;
-    output [col*psum_bw-1:0] psum_out_flat;
-
-    reg load_q, execute_q, load_2q;
-    assign load_out = load_2q;
-
-    always @(posedge clk) begin
-        load_q <= load;
-        execute_q <= execute;
-        load_2q <= load_q;
+        // per-lane output
+        .psum_out              (psum_out[(i+1)*psum_bw-1 -: psum_bw])
+      );
     end
-
-    // Instantiate col DP1M4 blocks
-    wire [psum_bw-1:0] psum_out_flat_wires [0:col-1];
-
-    genvar gi;
-    generate
-        for (gi = 0; gi < col; gi = gi + 1) begin : col_gen
-            wire [bw-1:0] weight_subset_0;
-            wire [bw-1:0] weight_subset_1;
-            wire [1:0] w_index_bits;
-            wire [psum_bw-1:0] psum_in_local;
-            wire [psum_bw-1:0] psum_out_local;
-
-            assign weight_subset_0 = weights_flat[(gi*ncol + 0)*bw +: bw];
-            assign weight_subset_1 = weights_flat[(gi*ncol + 1)*bw +: bw];
-            assign w_index_bits = weight_mask[gi*4 +: ncol];
-            assign psum_in_local = psum_in_flat[gi*psum_bw +: psum_bw];
-
-            DP1M4 #(
-                .bw(bw),
-                .psum_bw(psum_bw)
-            ) dp1m4_inst (
-                .clk(clk),
-                .reset(reset),
-                .load(load_q),
-                .execute(execute_q),
-                .a_select(a_select),
-                .weights_flat({weight_subset_1, weight_subset_0}),
-                .w_index(w_index_bits),
-                .activation_flat(activation_flat),
-                .activation_index_flat(activation_index_flat),
-                .psum_in(psum_in_local),
-                .psum_out(psum_out_local)
-            );
-
-            assign psum_out_flat[gi*psum_bw +: psum_bw] = psum_out_local;
-        end
-    endgenerate
+  endgenerate
 
 endmodule
