@@ -68,7 +68,7 @@ module mac_row (
         if (reset) begin
             for (i = 0; i < col; i = i + 1) begin
                 int_psum[i] <= 0;
-                final_psum[i] <= 0;
+
             end
         end else if (execute_q) begin
             if (load_q) begin
