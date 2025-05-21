@@ -4,7 +4,24 @@ module DP1M4_row #(
   parameter nnz     = 2,
   parameter n       = 4,
   parameter M       = 4
-) ( /* ports */ );
+) (
+  // shared control + activation
+  input  wire                   clk,
+  input  wire                   reset,
+  input  wire                   load,
+  input  wire                   execute,
+  input  wire [2*bw-1:0]        activation_flat,
+
+  // per-lane control + data (packed into wide vectors)
+  input  wire [M-1:0]           a_select,                   // one bit per lane
+  input  wire [M*nnz*bw-1:0]    weights_flat,               // concatenated NNZ×BW per lane
+  input  wire [M*n-1:0]         w_index,                    // concatenated n-bit one-hot per lane
+  input  wire [M*4-1:0]         activation_index_flat,      // concatenated 4-bit per lane
+  input  wire [M*psum_bw-1:0]   psum_in,                    // concatenated PSUM_BW per lane
+
+  // outputs per lane
+  output wire [M*psum_bw-1:0]   psum_out                    // concatenated PSUM_BW per lane
+);
 
   localparam int W_STRIDE = nnz*bw;
   genvar i;
